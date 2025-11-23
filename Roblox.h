@@ -2,6 +2,10 @@
 
 #include <Windows.h>
 #include <vector>
+#include <iostream>
+#include <fstream>
+#include <string>
+#include <ctime>
 
 #include "zstd.h"
 #include "xxhash.h"
@@ -14,6 +18,49 @@ using JobOriginalVF = uintptr_t(__fastcall*)(uintptr_t A1, uintptr_t A2, uintptr
 
 static JobOriginalVF OriginalVF = {};
 static std::vector<std::string> ScriptQueue;
+
+// Logging functionality
+namespace logger {
+    enum class LogLevel {
+        DEBUG = 0,
+        INFO = 1,
+        WARNING = 2,
+        ERROR = 3
+    };
+
+    inline std::string getCurrentTime() {
+        auto now = std::time(nullptr);
+        auto tm = *std::localtime(&now);
+        char buffer[100];
+        std::strftime(buffer, sizeof(buffer), "%Y-%m-%d %H:%M:%S", &tm);
+        return std::string(buffer);
+    }
+
+    inline void log(LogLevel level, const std::string& message) {
+        std::string levelStr;
+        switch (level) {
+            case LogLevel::DEBUG: levelStr = "DEBUG"; break;
+            case LogLevel::INFO: levelStr = "INFO"; break;
+            case LogLevel::WARNING: levelStr = "WARNING"; break;
+            case LogLevel::ERROR: levelStr = "ERROR"; break;
+        }
+
+        std::string logMessage = "[" + getCurrentTime() + "] [" + levelStr + "] " + message + "\n";
+        
+        // Write to console
+        std::cout << logMessage << std::flush;
+        
+        // Write to file
+        std::ofstream logFile("executor.log", std::ios_base::app);
+        logFile << logMessage;
+        logFile.close();
+    }
+
+    inline void debug(const std::string& message) { log(LogLevel::DEBUG, message); }
+    inline void info(const std::string& message) { log(LogLevel::INFO, message); }
+    inline void warning(const std::string& message) { log(LogLevel::WARNING, message); }
+    inline void error(const std::string& message) { log(LogLevel::ERROR, message); }
+}
 
 class bytecode_encoder_t : public Luau::BytecodeEncoder {
 	inline void encode(uint32_t* data, size_t count) override {
@@ -171,10 +218,13 @@ namespace executor
 {
 	void executeScript(std::string script)
 	{
+		logger::debug("Executing script: " + script.substr(0, std::min((size_t)50, script.length())) + (script.length() > 50 ? "..." : ""));
+		
 		auto compiledAndCompressed = Compile(script);
 
 		if (functions::LuaVMLoad(state, &compiledAndCompressed, "=Executor", 0) != 0)
 		{
+			logger::error("Error while executing script");
 			functions::Print(3LL, "Error while executing...");
 			functions::settop(state);
 			return;
@@ -182,6 +232,7 @@ namespace executor
 
 		functions::TaskDefer(state);
 		functions::settop(state);
+		logger::debug("Script executed successfully");
 		return;
 	}
 
@@ -214,20 +265,40 @@ namespace executor
 
 	void initialize()
 	{
+		logger::info("Initializing executor...");
 		auto scriptContext = scheduler::getScriptContext();
+		if (!scriptContext) {
+			logger::error("Failed to get script context");
+			return;
+		}
+		logger::debug("Got script context: 0x" + std::to_string(scriptContext));
 
 		uintptr_t x = 0;
 
 		auto encryptedState = functions::GetGlobalState(scriptContext + offsets::getGlobalOffset, &x, &x);
+		if (!encryptedState) {
+			logger::error("Failed to get encrypted state");
+			return;
+		}
+		logger::debug("Got encrypted state: 0x" + std::to_string(encryptedState));
+
 		auto decryptedState = functions::DecryptState(encryptedState + offsets::decryptStateOffset);
+		if (!decryptedState) {
+			logger::error("Failed to decrypt state");
+			return;
+		}
+		logger::debug("Got decrypted state: 0x" + std::to_string(decryptedState));
 
 		state = decryptedState;
 
 		functions::setIdentity(state, 8, maxCaps);
+		logger::info("Executor initialized successfully with identity 8");
 	}
 
 	void addScript(std::string script)
 	{
+		logger::debug("Adding script to queue: " + script.substr(0, std::min((size_t)50, script.length())) + (script.length() > 50 ? "..." : ""));
 		ScriptQueue.push_back(script);
+		logger::info("Script queue size: " + std::to_string(ScriptQueue.size()));
 	}
 }
